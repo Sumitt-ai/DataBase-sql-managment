@@ -222,7 +222,7 @@ def toggle_status(username: str, principal: dict = Depends(require_admin)):
 @app.delete("/api/users/{username}")
 def delete_user(username: str, body: UserDeleteRequest, principal: dict = Depends(require_admin)):
     try:
-        db.delete_user_account(username=username, mode=body.deleteMode)
+        db.delete_user_account(username=username, mode=body.deleteMode, actor_username=principal["username"])
         return {"success": True, "message": f"User '@{username}' deleted using mode {body.deleteMode}."}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

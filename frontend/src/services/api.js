@@ -139,6 +139,7 @@ export const api = {
   createClient: (clientData) => request('/admin/clients', { method: 'POST', body: JSON.stringify(clientData) }),
   setClientStatus: (clientId, isActive) =>
     request(`/admin/clients/${clientId}/status`, { method: 'PATCH', body: JSON.stringify({ isActive }) }),
+  removeClient: (clientId) => request(`/admin/clients/${clientId}`, { method: 'DELETE' }),
   updateClientPermissions: (clientId, permissions) =>
     request(`/admin/clients/${clientId}/permissions`, { method: 'PUT', body: JSON.stringify({ permissions }) }),
   getAdminClientFiles: (clientId) => request(`/admin/clients/${clientId}/files`),
@@ -161,4 +162,3 @@ export const api = {
     request(`/client/workbook/${fileId}`, { method: 'PUT', body: JSON.stringify(workbook) }),
   getClientActivity: () => request('/client/activity'),
 };
-

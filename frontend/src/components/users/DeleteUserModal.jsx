@@ -12,7 +12,7 @@ import {
   X
 } from 'lucide-react';
 
-export const DeleteUserModal = ({ isOpen, onClose, user }) => {
+export const DeleteUserModal = ({ isOpen, onClose, onDeleted, user }) => {
   const { deleteUser } = useApp();
 
   const [selectedOption, setSelectedOption] = useState(null); // 'A' | 'B' | null
@@ -35,9 +35,13 @@ export const DeleteUserModal = ({ isOpen, onClose, user }) => {
   // Option A: Delete Account Only
   const handleDeleteAccountOnly = async () => {
     setIsDeleting(true);
-    await deleteUser(user.id, 'ACCOUNT_ONLY');
-    setIsDeleting(false);
-    handleClose();
+    try {
+      await deleteUser(user.id, 'ACCOUNT_ONLY');
+      await onDeleted?.();
+      handleClose();
+    } catch {
+      setIsDeleting(false);
+    }
   };
 
   // Option B: Delete Account and Database (with backup verification)
@@ -62,8 +66,14 @@ export const DeleteUserModal = ({ isOpen, onClose, user }) => {
     setTimeout(async () => {
       setBackupStage('deleting');
       setTimeout(async () => {
-        await deleteUser(user.id, 'ACCOUNT_AND_DATABASE');
-        handleClose();
+        try {
+          await deleteUser(user.id, 'ACCOUNT_AND_DATABASE');
+          await onDeleted?.();
+          handleClose();
+        } catch {
+          setBackupStage('idle');
+          setBackupProgress(0);
+        }
       }, 700);
     }, 2200);
   };
@@ -288,4 +298,3 @@ export const DeleteUserModal = ({ isOpen, onClose, user }) => {
     </Modal>
   );
 };
-

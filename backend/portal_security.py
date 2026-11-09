@@ -84,11 +84,13 @@ def get_current_principal(
                 principal = None
             if principal and principal["role"] == "client":
                 cursor.execute(
-                    "SELECT is_active FROM clients WHERE client_id = %s",
+                    "SELECT c.is_active, r.client_id AS removed_client_id "
+                    "FROM clients c LEFT JOIN client_access_removals r ON r.client_id = c.client_id "
+                    "WHERE c.client_id = %s",
                     (principal["client_id"],),
                 )
                 client = cursor.fetchone()
-                if not client or not client["is_active"]:
+                if not client or not client["is_active"] or client["removed_client_id"]:
                     principal = None
     except pymysql.MySQLError as exc:
         raise HTTPException(status_code=503, detail="Authentication service is unavailable.") from exc

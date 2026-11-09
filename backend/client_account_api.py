@@ -22,7 +22,12 @@ def client_login(body: LoginRequest, request: Request):
     conn = get_portal_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT * FROM clients WHERE username = %s", (username,))
+            cursor.execute(
+                "SELECT c.* FROM clients c "
+                "LEFT JOIN client_access_removals r ON r.client_id = c.client_id "
+                "WHERE c.username = %s AND r.client_id IS NULL",
+                (username,),
+            )
             client = cursor.fetchone()
             if not client or not client["is_active"]:
                 raise HTTPException(status_code=401, detail="Invalid MySQL username/password or Client Portal access is not enabled.")

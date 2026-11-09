@@ -27,6 +27,35 @@ def log_portal_activity(cursor, role: str, username: str, client_id: int | None,
     )
 
 
+def remove_client_access(cursor, client_id: int, actor_username: str, ip: str | None = None) -> bool:
+    cursor.execute("SELECT username FROM clients WHERE client_id = %s FOR UPDATE", (client_id,))
+    client = cursor.fetchone()
+    if not client:
+        return False
+
+    cursor.execute("UPDATE clients SET is_active = 0 WHERE client_id = %s", (client_id,))
+    cursor.execute(
+        "INSERT INTO client_access_removals (client_id, removed_by) VALUES (%s, %s) "
+        "ON DUPLICATE KEY UPDATE removed_by = VALUES(removed_by), removed_at = UTC_TIMESTAMP()",
+        (client_id, actor_username),
+    )
+    cursor.execute(
+        "UPDATE auth_sessions SET revoked_at = UTC_TIMESTAMP() "
+        "WHERE client_id = %s AND revoked_at IS NULL",
+        (client_id,),
+    )
+    log_portal_activity(
+        cursor,
+        "admin",
+        actor_username,
+        client_id,
+        "client_access_removed",
+        details={"username": client["username"]},
+        ip=ip,
+    )
+    return True
+
+
 def client_profile(cursor, client_id: int) -> dict:
     cursor.execute(
         "SELECT client_id, username, client_name, is_active, created_at FROM clients WHERE client_id = %s",

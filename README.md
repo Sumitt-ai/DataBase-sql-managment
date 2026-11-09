@@ -8,7 +8,7 @@ An existing React/Vite administration console backed by FastAPI, MySQL 8, and a 
 
 - MySQL-backed administrator login.
 - Dashboard, MySQL user management, database management, request approvals, activity log, and settings.
-- Separate Client Management for enabling existing MySQL accounts in the Client Portal, setting file permissions, activating/deactivating portal access, reviewing uploaded files, viewing storage usage, and reviewing client activity.
+- Separate Client Management for enabling existing MySQL accounts in the Client Portal, setting file permissions, activating/deactivating or removing portal access, deleting the associated MySQL user, reviewing uploaded files, viewing storage usage, and reviewing client activity. Removing portal access preserves the user's uploaded files and activity history.
 - The MySQL User Management page creates and manages database accounts. Client Management enrolls an existing MySQL account for portal access and does not create a second password.
 
 ### Client Portal
@@ -65,7 +65,7 @@ Make sure the Windows account running FastAPI can write to this configured direc
 
 ## Client Portal metadata schema
 
-`backend/client_portal_schema.sql` contains an additive migration for the separate `mysql_admin_portal` schema and its six tables: `clients`, `client_permissions`, `auth_sessions`, `client_files`, `client_file_versions`, and `client_activity`. It also makes the legacy `clients.password_hash` column nullable; that field is no longer used for sign-in. The schema was created on this project instance earlier, but rerun this SQL file after the MySQL server is reachable to apply the compatibility change. The backend does not automatically apply DDL at startup.
+`backend/client_portal_schema.sql` contains an additive migration for the separate `mysql_admin_portal` schema and its seven tables: `clients`, `client_access_removals`, `client_permissions`, `auth_sessions`, `client_files`, `client_file_versions`, and `client_activity`. Removed enrollments are hidden from Client Management and have their sessions revoked; their portal files and history remain stored. Re-enabling the same account restores its enrollment and retained data. The script also makes the legacy `clients.password_hash` column nullable; that field is no longer used for sign-in. The schema was created on this project instance earlier, but rerun this SQL file after the MySQL server is reachable to apply the compatibility change. The backend does not automatically apply DDL at startup.
 
 On another server, inspect the schema and check for conflicts before applying the migration. It uses `CREATE DATABASE IF NOT EXISTS`, `CREATE TABLE IF NOT EXISTS`, and a non-destructive `MODIFY COLUMN` for the legacy password-hash field; it does not drop existing objects. Do not run privilege-grant scripts without reviewing their contents and understanding the required grants.
 

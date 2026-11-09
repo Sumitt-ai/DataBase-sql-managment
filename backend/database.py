@@ -6,6 +6,8 @@ import uuid
 import pymysql
 import pymysql.cursors
 from backend.config import settings
+from backend.portal_api_common import remove_client_access
+from backend.portal_security import get_portal_connection
 
 # Lightweight SQLite database for persisting audit trail, user profiles, and requests
 META_DB_PATH = os.path.join(os.path.dirname(__file__), "admin_meta.db")
@@ -543,7 +545,7 @@ def update_user_account(username: str, full_name: str = None, password: str = No
     log_activity("User Updated", clean_user, f"Updated configuration for user '@{clean_user}'")
 
 
-def delete_user_account(username: str, mode: str):
+def delete_user_account(username: str, mode: str, actor_username: str = "system"):
     """
     Executes Section 10 deletion workflow:
     - Mode 'ACCOUNT_ONLY': Revokes privileges, drops user, preserves database.
@@ -558,18 +560,35 @@ def delete_user_account(username: str, mode: str):
     assigned_db = row[0] if row else None
     conn_meta.close()
 
+    portal_conn = get_portal_connection()
     try:
+        with portal_conn.cursor() as cursor:
+            cursor.execute("SELECT client_id FROM clients WHERE username = %s", (clean_user,))
+            client = cursor.fetchone()
+            if client:
+                remove_client_access(cursor, client["client_id"], actor_username)
+
         conn = get_mysql_connection()
-        with conn.cursor() as cursor:
-            cursor.execute("REVOKE ALL PRIVILEGES, GRANT OPTION FROM %s@'%%';", (clean_user,))
-            cursor.execute("DROP USER %s@'%%';", (clean_user,))
-            if mode == "ACCOUNT_AND_DATABASE" and assigned_db:
-                cursor.execute(f"DROP DATABASE `{assigned_db}`;")
-            cursor.execute("FLUSH PRIVILEGES;")
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Direct MySQL drop user note: {e}")
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("REVOKE ALL PRIVILEGES, GRANT OPTION FROM %s@'%%';", (clean_user,))
+                cursor.execute("DROP USER %s@'%%';", (clean_user,))
+                if mode == "ACCOUNT_AND_DATABASE" and assigned_db:
+                    cursor.execute(f"DROP DATABASE `{assigned_db}`;")
+                cursor.execute("FLUSH PRIVILEGES;")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        portal_conn.commit()
+    except Exception:
+        portal_conn.rollback()
+        raise
+    finally:
+        portal_conn.close()
 
     conn_meta = sqlite3.connect(META_DB_PATH)
     cur = conn_meta.cursor()

@@ -395,6 +395,13 @@ export const AppProvider = ({ children }) => {
     const username = user.username;
     const assignedDb = user.assignedDatabase;
 
+    try {
+      await api.deleteUser(username, deleteMode);
+    } catch (error) {
+      addToast(`Could not delete user '${username}': ${error.message}`, 'error');
+      throw error;
+    }
+
     setUsers((prev) => prev.filter((u) => u.id !== userId));
 
     if (deleteMode === 'ACCOUNT_ONLY') {
@@ -416,12 +423,6 @@ export const AppProvider = ({ children }) => {
       }
       logActivity('User Deleted', username, `Option B: Deleted user @${username} and dropped database '${assignedDb}'.`);
       addToast(`User '${username}' and database '${assignedDb}' deleted after backup verification.`, 'warning');
-    }
-
-    try {
-      await api.deleteUser(username, deleteMode);
-    } catch (e) {
-      console.warn("Backend delete user error:", e);
     }
   };
 

@@ -12,7 +12,14 @@ from backend.models import (
     ClientPermissionsRequest,
     ClientStatusRequest,
 )
-from backend.portal_api_common import client_permissions, file_json, file_response, get_file, log_portal_activity
+from backend.portal_api_common import (
+    client_permissions,
+    file_json,
+    file_response,
+    get_file,
+    log_portal_activity,
+    remove_client_access,
+)
 from backend.portal_security import get_portal_connection, require_admin
 
 
@@ -29,6 +36,8 @@ def list_clients(principal: dict = Depends(require_admin)):
                 "SELECT c.client_id, c.username, c.client_name, c.is_active, c.created_at, "
                 "COUNT(f.file_id) AS file_count, COALESCE(SUM(f.size_bytes), 0) AS storage_bytes "
                 "FROM clients c LEFT JOIN client_files f ON f.client_id = c.client_id "
+                "LEFT JOIN client_access_removals r ON r.client_id = c.client_id "
+                "WHERE r.client_id IS NULL "
                 "GROUP BY c.client_id ORDER BY c.created_at DESC"
             )
             clients = cursor.fetchall()
@@ -72,14 +81,20 @@ def create_client(body: ClientCreateRequest, request: Request, principal: dict =
     conn = get_portal_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT client_id, client_name, is_active FROM clients WHERE username = %s FOR UPDATE", (username,))
+            cursor.execute(
+                "SELECT c.client_id, c.client_name, c.is_active, r.client_id IS NOT NULL AS is_removed "
+                "FROM clients c LEFT JOIN client_access_removals r ON r.client_id = c.client_id "
+                "WHERE c.username = %s FOR UPDATE",
+                (username,),
+            )
             existing = cursor.fetchone()
             if existing:
                 client_id = existing["client_id"]
                 client_name = existing["client_name"]
-                reactivated = not bool(existing["is_active"])
+                reactivated = not bool(existing["is_active"]) or bool(existing["is_removed"])
                 if reactivated:
                     cursor.execute("UPDATE clients SET is_active = 1 WHERE client_id = %s", (client_id,))
+                    cursor.execute("DELETE FROM client_access_removals WHERE client_id = %s", (client_id,))
                     log_portal_activity(
                         cursor, "admin", principal["username"], client_id, "client_activated",
                         details={"username": username}, ip=request.client.host if request.client else None,
@@ -131,11 +146,38 @@ def create_client(body: ClientCreateRequest, request: Request, principal: dict =
         conn.close()
 
 
+@router.delete("/{client_id}")
+def remove_client(client_id: int, request: Request, principal: dict = Depends(require_admin)):
+    conn = get_portal_connection()
+    try:
+        with conn.cursor() as cursor:
+            if not remove_client_access(
+                cursor,
+                client_id,
+                principal["username"],
+                request.client.host if request.client else None,
+            ):
+                raise HTTPException(status_code=404, detail="Client account not found.")
+        conn.commit()
+        return {"success": True, "message": "Client Portal access removed. Existing files and history were preserved."}
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 @router.patch("/{client_id}/status")
 def set_client_status(client_id: int, body: ClientStatusRequest, request: Request, principal: dict = Depends(require_admin)):
     conn = get_portal_connection()
     try:
         with conn.cursor() as cursor:
+            cursor.execute("SELECT client_id FROM client_access_removals WHERE client_id = %s", (client_id,))
+            if body.isActive and cursor.fetchone():
+                raise HTTPException(status_code=409, detail="Client Portal access was removed. Enable access again to restore this account.")
             cursor.execute("UPDATE clients SET is_active = %s WHERE client_id = %s", (body.isActive, client_id))
             if cursor.rowcount == 0:
                 cursor.execute("SELECT client_id FROM clients WHERE client_id = %s", (client_id,))

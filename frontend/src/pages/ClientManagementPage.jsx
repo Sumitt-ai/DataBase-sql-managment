@@ -5,6 +5,7 @@ import { useApp } from '../context/AppContext';
 import { api } from '../services/api';
 import { Modal } from '../components/common/Modal';
 import { StatusBadge } from '../components/common/Badge';
+import { DeleteUserModal } from '../components/users/DeleteUserModal';
 
 const PERMISSION_OPTIONS = [
   ['upload', 'Upload files'],
@@ -23,7 +24,7 @@ const formatBytes = (bytes = 0) => {
 const formatDate = (value) => value ? new Date(value).toLocaleString() : '—';
 
 export const ClientManagementPage = () => {
-  const { addToast } = useApp();
+  const { addToast, users } = useApp();
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
@@ -31,6 +32,7 @@ export const ClientManagementPage = () => {
   const [detailRows, setDetailRows] = useState([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [permissionClient, setPermissionClient] = useState(null);
+  const [userToDelete, setUserToDelete] = useState(null);
 
   const loadClients = useCallback(async () => {
     setLoading(true);
@@ -68,6 +70,26 @@ export const ClientManagementPage = () => {
     } catch (err) {
       addToast(`Could not update client status: ${err.message}`, 'error');
     }
+  };
+
+  const removeClient = async (client) => {
+    if (!window.confirm(`Remove @${client.username} from Client Management? Portal access will be revoked, but uploaded files and activity history will be preserved.`)) return;
+    try {
+      await api.removeClient(client.clientId);
+      addToast(`Client Portal access removed for @${client.username}. Existing files and history were preserved.`, 'success');
+      await loadClients();
+    } catch (err) {
+      addToast(`Could not remove client access: ${err.message}`, 'error');
+    }
+  };
+
+  const openDeleteUser = (client) => {
+    const user = users.find((entry) => entry.username.toLowerCase() === client.username.toLowerCase());
+    if (!user) {
+      addToast(`MySQL user @${client.username} was not found in User Management. Remove Client Portal access instead.`, 'error');
+      return;
+    }
+    setUserToDelete(user);
   };
 
   const downloadFile = async (client, file) => {
@@ -123,6 +145,8 @@ export const ClientManagementPage = () => {
                         <button onClick={() => openDetails(client, 'activity')} className="p-1.5 rounded-lg border border-slate-700 text-slate-400 hover:text-cyan-300" title="View client activity"><Activity className="w-3.5 h-3.5"/></button>
                         <button onClick={() => setPermissionClient(client)} className="p-1.5 rounded-lg border border-slate-700 text-slate-400 hover:text-cyan-300" title="Edit permissions"><ShieldCheck className="w-3.5 h-3.5"/></button>
                         <button onClick={() => toggleClient(client)} className={`px-2 py-1.5 rounded-lg border ${client.isActive ? 'border-rose-500/30 text-rose-300 hover:bg-rose-500/10' : 'border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10'}`}>{client.isActive ? 'Deactivate' : 'Activate'}</button>
+                        <button onClick={() => removeClient(client)} className="px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-300 hover:bg-amber-500/10">Remove Access</button>
+                        <button onClick={() => openDeleteUser(client)} className="px-2 py-1.5 rounded-lg border border-rose-500/30 text-rose-300 hover:bg-rose-500/10">Delete User</button>
                       </div>
                     </td>
                   </tr>)}
@@ -133,6 +157,7 @@ export const ClientManagementPage = () => {
 
       <CreateClientModal isOpen={createOpen} onClose={() => setCreateOpen(false)} onCreated={loadClients} />
       <ClientPermissionsModal client={permissionClient} onClose={() => setPermissionClient(null)} onSaved={loadClients} />
+      <DeleteUserModal isOpen={!!userToDelete} onClose={() => setUserToDelete(null)} onDeleted={loadClients} user={userToDelete} />
       <Modal isOpen={!!details} onClose={() => setDetails(null)} title={<span>{details?.view === 'files' ? <FileSpreadsheet className="inline w-4 h-4 mr-2 text-cyan-400"/> : <Activity className="inline w-4 h-4 mr-2 text-cyan-400"/>}{details?.client.clientName} — {details?.view === 'files' ? 'Files' : 'Activity'}</span>} subtitle={`Client account @${details?.client.username}`} maxWidth="max-w-4xl">
         {detailLoading ? <p className="text-center py-10 text-slate-500">Loading…</p> : details?.view === 'files' ? <div className="overflow-x-auto"><table className="w-full text-xs text-left"><thead className="text-slate-500 uppercase"><tr><th className="py-2">File</th><th>State</th><th>Version</th><th>Size</th><th>Updated</th><th/></tr></thead><tbody className="divide-y divide-slate-800">{detailRows.map((file) => <tr key={file.fileId}><td className="py-3 text-slate-200">{file.originalName}</td><td className="text-slate-400 capitalize">{file.state}</td><td className="text-slate-400">v{file.currentVersion}</td><td className="text-slate-400">{formatBytes(file.sizeBytes)}</td><td className="text-slate-500">{formatDate(file.updatedAt)}</td><td className="text-right">{file.state === 'active' && <button onClick={() => downloadFile(details.client, file)} className="p-1.5 text-slate-400 hover:text-cyan-300" title="Download file"><Download className="w-4 h-4"/></button>}</td></tr>)}{detailRows.length === 0 && <tr><td colSpan={6} className="py-8 text-center text-slate-500">No files found.</td></tr>}</tbody></table></div> : <div className="space-y-2">{detailRows.map((event, index) => <div key={`${event.createdAt}-${index}`} className="p-3 rounded-lg bg-slate-950 border border-slate-800 flex justify-between gap-4"><span className="text-slate-200">{event.action.replaceAll('_', ' ')} <span className="text-slate-500">by @{event.actorUsername}</span></span><time className="text-slate-500 shrink-0">{formatDate(event.createdAt)}</time></div>)}{detailRows.length === 0 && <p className="text-center py-8 text-slate-500">No activity found.</p>}</div>}
       </Modal>

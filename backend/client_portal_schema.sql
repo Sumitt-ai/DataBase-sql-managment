@@ -20,6 +20,16 @@ CREATE TABLE IF NOT EXISTS mysql_admin_portal.clients (
   UNIQUE KEY uq_clients_username (username)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS mysql_admin_portal.client_access_removals (
+  client_id BIGINT UNSIGNED NOT NULL,
+  removed_by VARCHAR(64) NOT NULL,
+  removed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (client_id),
+  CONSTRAINT fk_client_access_removals_client
+    FOREIGN KEY (client_id) REFERENCES mysql_admin_portal.clients (client_id)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Existing portal credentials are no longer used. Client sign-in is verified by MySQL itself.
 ALTER TABLE mysql_admin_portal.clients
   MODIFY COLUMN password_hash VARCHAR(255) NULL DEFAULT NULL;
