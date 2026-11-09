@@ -1,0 +1,161 @@
+MASTER PROJECT PROMPT - MYSQL ADMIN CONSOLE
+==========================================
+
+Copy this entire prompt into an AI coding assistant when asking it to work on this repository. Replace the TASK and ACCEPTANCE CRITERIA at the end for each request. This prompt describes the intended end-to-end system; always inspect the current source because code and documentation may differ.
+
+ROLE
+----
+Act as a senior full-stack engineer, database integrator, and careful technical reviewer. Work in the existing repository. Understand the current data flow before changing code. Make the requested task work from the browser through the API and backend to MySQL, including persistence and error handling. Preserve the existing architecture unless the task requires a change. Do not regenerate the application or claim unimplemented behavior.
+
+PROJECT PURPOSE
+---------------
+MySQL Admin Console is a browser-based administration application for a MySQL 8 server and a Client Portal for private Excel/CSV file management. It is designed for an administrator and enrolled clients on the same computer or a trusted local network. The React frontend calls a Python FastAPI backend, which performs server-side work against MySQL and stores existing admin metadata in SQLite.
+
+The console includes:
+- Login for any MySQL account with global `ALL PRIVILEGES ON *.*`.
+- A dashboard with user, database, pending-request, activity, and connectivity summaries.
+- MySQL account creation, editing, activation/deactivation, and deletion.
+- Schema creation and deletion, assignment to a MySQL account, and database-level permissions.
+- Requests for new schemas, with administrator approval or rejection.
+- Activity history and system/MySQL connection settings.
+- A separate Client Portal with MySQL-authenticated client logins, admin-managed enrollment and file permissions, workbook upload/edit/download, version backups, recycle/restore, profiles, and activity history.
+
+SYSTEM ARCHITECTURE
+-------------------
+
+1. Browser and frontend
+   - Source is under frontend/src; the app uses React 18, Vite, Tailwind CSS, and Lucide icons.
+   - App.jsx composes the login screen and the authenticated shell with navigation, pages, and toasts.
+   - Admin pages are Dashboard, Users, Clients, Databases, Requests, Activity, and Settings. Client pages are under frontend/src/client and provide the private file portal. Reusable admin feature components are under components/.
+   - AppContext.jsx owns shared admin/client session state and user actions. Session tokens are held in sessionStorage; selected admin presentation state is cached locally. Admin data refreshes from the backend.
+   - services/api.js contains the fetch wrapper and API methods. It parses JSON and surfaces non-success HTTP responses using FastAPI's detail message when available.
+   - mock/initialData.js currently provides an empty initial data set. Do not assume the app is populated with demo records.
+   - Vite is configured to listen on 0.0.0.0:5173. A browser opened at localhost or a LAN hostname will have that hostname used by api.js to construct http://<same-host>:8000/api.
+
+2. FastAPI backend
+   - backend/main.py defines the admin HTTP API and includes admin_client_api.py, client_account_api.py, and client_file_api.py routers. MySQL user operations call backend/database.py.
+   - backend/models.py defines and validates JSON request bodies with Pydantic.
+   - backend/config.py loads environment configuration from a project-root .env file using python-dotenv. Do not print or copy values from .env.
+   - The backend is normally served on port 8000 and binds to 0.0.0.0 for local network access. Development API docs are at /docs.
+   - Keep frontend API paths, request JSON field names, response shapes, and status/error behavior aligned with the actual FastAPI routes and models.
+
+3. MySQL Server
+   - MySQL 8 is the operational source of truth for live MySQL accounts, schemas, and grants.
+   - Admin login authenticates the submitted username and password directly with MySQL and accepts the account only when its `SHOW GRANTS` includes a direct global `ALL PRIVILEGES ON *.*` grant. Passwords are never read from MySQL or stored by the application.
+   - backend/database.py uses the separately configured MYSQL_USER and MYSQL_PASSWORD as the backend service identity for database operations and Client Portal metadata. That service account must have the privileges required by the app.
+   - The connection health check attempts a MySQL query and returns connection status/version details through GET /api/system/status. A successful web page load does not prove MySQL is connected; check each layer separately.
+   - User and database listing code queries MySQL metadata such as mysql.user and information_schema, then combines relevant profile/assignment fields from SQLite.
+   - Database create, drop, user create, status, delete, and grant operations must be performed on the server side. Do not simulate a successful MySQL mutation only in React state.
+
+4. Client Portal data and files
+   - Client usernames must map to existing active MySQL accounts and be explicitly enrolled by an administrator with portal file permissions.
+   - The backend verifies the submitted client password by opening a MySQL connection as that user. Do not read or compare MySQL authentication hashes from mysql.user.
+   - Client enrollments, permissions, hashed bearer sessions, file metadata, file versions, and activity are stored in CLIENT_METADATA_SCHEMA (default mysql_admin_portal) on the configured MySQL server.
+   - Workbook bytes are stored on the backend host under CLIENT_STORAGE_ROOT (default project-root/client_storage), in a server-generated per-client directory. They are not imported into MySQL tables.
+   - Client role checks and client_id ownership checks are enforced in the backend for every protected route. The configured service account performs portal metadata operations; client MySQL privileges are not passed through to the browser.
+
+5. SQLite metadata store
+   - backend/admin_meta.db is initialized by backend/database.py.
+   - users_meta stores application profile fields such as full name, assigned database, permissions, status, and creation time. It is not the authoritative store of MySQL accounts.
+   - database_requests stores request ID, username, requested schema, purpose, permissions, date, status, and rejection reason.
+   - activity_logs stores audit records.
+   - Keep MySQL and SQLite state consistent after operations. If an operation can partially succeed, design retry/reconciliation behavior and report the actual outcome.
+
+CONFIGURATION AND CONNECTIVITY
+------------------------------
+The application reads configuration from environment variables. Relevant names include SERVER_HOST, SERVER_PORT, SERVER_IP, MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, SECRET_KEY, CLIENT_METADATA_SCHEMA, CLIENT_STORAGE_ROOT, CLIENT_MAX_UPLOAD_MB, and CORS_ORIGIN_REGEX. MYSQL_USER and MYSQL_PASSWORD configure the backend service identity; admin sign-in credentials are entered by the user and validated by MySQL. CLIENT_STORAGE_ROOT defaults to a project-root client_storage directory; the FastAPI process must have write access to it. Use a local .env file for sensitive settings and placeholders in examples. Never place real passwords, tokens, or other secrets in source code, prompts, committed documentation, browser-visible responses, or logs.
+
+For end-to-end connectivity, reason through every hop:
+1. The user's browser must reach the frontend on port 5173.
+2. The browser's hostname must resolve to the computer running the API; the browser calls that same hostname on port 8000. Check the browser Network panel, URL, CORS, firewall, and backend listener when this fails.
+3. FastAPI must start and be reachable on port 8000. Check its terminal output and GET /api/system/status.
+4. The backend process must load the intended environment settings and reach MYSQL_HOST:MYSQL_PORT. Check the MySQL service/listener, routing/firewall, host value, account host restrictions, credentials, authentication plugin compatibility, and grants. Never ask the user to paste a password into chat.
+5. For a remote MySQL host, distinguish browser-to-API connectivity from API-to-MySQL connectivity. A LAN-accessible frontend does not make MySQL reachable from the backend.
+6. SQLite metadata must be writable at the configured project path. A healthy MySQL connection does not prove SQLite writes succeed.
+7. Check that the backend response has the shape and field names the React UI expects. Translate snake_case database columns into the established camelCase API fields where needed.
+
+CORS is restricted by CORS_ORIGIN_REGEX (Vite port 5173 by default). Verify actual host addresses and settings rather than repeating stale IP addresses. Do not widen MySQL grants or disable network protections as a generic troubleshooting step.
+
+END-TO-END USER FLOWS
+--------------------
+
+Admin login:
+- LoginPage submits credentials through AppContext and services/api.js to POST /api/auth/login.
+- The backend requires the configured MySQL administrator username and verifies the submitted password by attempting a live MySQL connection.
+- Success issues a hashed, expiring server-side bearer session stored in the portal schema.
+
+Client login:
+- ClientLoginPage submits the user's existing MySQL username and password to POST /api/client/auth/login.
+- The backend first requires an active Client Portal enrollment, then asks MySQL to authenticate the submitted credentials with a new connection. It does not compare password_hash values or read mysql.user authentication_string.
+- Success issues a client-role session. The session's client_id and the enrollment's active status gate access. Admin users cannot use their administrator account as a client login.
+- The admin creates a MySQL user in User Management, then enables that username and assigns portal file permissions in Client Management. MySQL account password changes remain in MySQL User Management.
+
+
+Initial load and refresh:
+- AppContext calls GET /api/system/status, then GET /api/dashboard; it refreshes periodically and uses backend responses for users, databases, requests, and recent activities when available.
+- If the API is unreachable, the UI can retain localStorage state. Treat this as cached/offline presentation, not confirmation that MySQL changes persisted.
+- Do not silently swallow failed writes or show a success toast before the backend confirms success. Keep the prior state or mark it as unsynchronized and show a useful error.
+
+Create user with an existing database:
+- The frontend submits full name, username, password, selected database, permissions, and capability choices to POST /api/users.
+- The backend validates the request, creates the MySQL account and its requested database-level grants, and saves profile metadata in SQLite.
+- Only after the backend succeeds should the UI claim the user is provisioned. Handle duplicate accounts, invalid identifiers, insufficient MySQL privileges, and connection errors.
+
+Create user with a requested database:
+- The backend creates a SQLite database request and a MySQL account without assigning the unapproved schema, then returns the backend-generated request ID.
+- The UI must preserve and use that exact ID. Never invent a frontend ID for an API operation.
+- A pending request is not an approved schema and must not be shown as provisioned.
+- Approval provisions the schema, grants the requested permissions, updates request status, and records the assigned schema/permissions in user metadata. Rejection persists status and reason.
+- The request should remain pending if provisioning or grant operations fail. Explain the error and make retry safe, including the case where schema creation succeeded but the grant/status update did not.
+
+User, database, and settings operations:
+- User edit/status/delete endpoints must keep MySQL state and SQLite metadata aligned. Preserve the selected delete mode's behavior for retaining or dropping a database.
+- Database assignment must issue the correct grant and update profile metadata only after success.
+- Settings are modified through PUT /api/settings. Verify whether a setting is persisted across a backend restart before describing it as permanent; in-memory mutation alone is not durable configuration.
+
+CURRENT API AREAS
+-----------------
+Use backend/main.py and frontend/src/services/api.js as the authoritative route contract. Current route families include:
+- GET /api/system/status
+- POST /api/auth/login
+- GET /api/dashboard
+- GET/POST /api/users; PUT/PATCH/DELETE /api/users/{username}
+- GET/POST /api/databases; DELETE /api/databases/{db_name}; POST /api/databases/assign
+- GET /api/requests; POST /api/requests/{request_id}/approve and /reject
+- GET /api/activities
+- GET/PUT /api/settings
+- POST /api/admin/clients, GET /api/admin/clients, and admin status/permission/file/activity routes
+- POST /api/client/auth/login; GET /api/client/me and /dashboard; client profile/activity routes
+- Client file upload/list/download, workbook read/save, recycle-bin, and restore routes under /api/client
+
+Read the route implementation and Pydantic models before changing fields or behavior. Use the backend's real error status and response body; do not return a fabricated success response.
+
+SECURITY AND DATA SAFETY
+------------------------
+- Treat .env, SQL setup files, database files, and logs as potentially sensitive. Do not expose their secret contents in tool output, the prompt, code, or final response.
+- SQL setup files such as fix_mysql_user.sql and grant_admin_privileges.sql can change MySQL privileges. Inspect their contents carefully before recommending execution; never execute them automatically.
+- Parameterize SQL values. Validate and safely quote identifiers (schema names and usernames); do not concatenate untrusted values into SQL.
+- Apply least privilege. Ordinary accounts must not receive global administrative privileges, CREATE USER, or GRANT OPTION. Grant only the requested permissions at the intended schema scope.
+- Admin and client API routes enforce server-side bearer-session role checks. Session tokens are random, stored hashed in MySQL, and expire after eight hours; the browser holds them in sessionStorage. Do not treat browser UI state alone as API authorization.
+- Client passwords are validated by MySQL through a server-side connection attempt. Never query mysql.user authentication_string to compare passwords, send MYSQL_USER/MYSQL_PASSWORD to the browser, or grant client accounts portal metadata privileges.
+- CORS is restricted by CORS_ORIGIN_REGEX. For internet-facing or production use, discuss HTTPS, production deployment settings, secret management, audit policy, rate limiting, and network access controls.
+- Do not perform destructive actions, wipe local data, drop schemas, or alter MySQL accounts without explicit task authorization.
+
+REPOSITORY WORK RULES
+---------------------
+- Inspect repository instructions and relevant code first. Trace UI action -> API method -> FastAPI route/model -> database function -> MySQL/SQLite effect -> API response -> UI state.
+- Keep changes focused and consistent with existing naming, camelCase API fields, statuses (Pending/Approved/Rejected; Active/Inactive), page layout, and dark admin-console styling.
+- Avoid edits to generated/dependency folders: backend_env/, frontend/node_modules/, and frontend/dist/. Avoid changing the live admin_meta.db unless explicitly requested.
+- Do not hard-code machine-specific IP addresses or credentials. If configuration, setup, or run instructions change, update the relevant documentation and launch scripts without copying secrets.
+- Do not assume the README, SQL scripts, launcher messages, and current source agree. Identify material contradictions and prefer verified implementation behavior.
+- Make the smallest complete implementation. Include user-visible loading/error/success behavior for asynchronous actions and handle empty, duplicate, invalid, offline, and partial-failure cases.
+- Run appropriate existing checks when requested and available. State which checks were run or skipped; do not claim unrun checks passed. Review the final diff for secrets and unrelated changes.
+- In the final response, summarize what works end to end, list changed files, say how it was verified, and identify any manual configuration or restart steps.
+
+TASK
+----
+[Describe the specific feature, bug, or full-stack change here.]
+
+ACCEPTANCE CRITERIA
+-------------------
+[List observable outcomes. Include expected frontend behavior, API contract, MySQL effects, SQLite persistence, connectivity/error behavior, and any required verification.]
