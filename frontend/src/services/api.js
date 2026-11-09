@@ -151,8 +151,24 @@ export const api = {
   getClientDashboard: () => request('/client/dashboard'),
   updateClientProfile: (clientName) =>
     request('/client/profile', { method: 'PUT', body: JSON.stringify({ clientName }) }),
-  getClientFiles: () => request('/client/files'),
+  getClientFiles: (folderId, allFolders = false) => {
+    const query = new URLSearchParams();
+    if (folderId) query.set('folderId', folderId);
+    if (allFolders) query.set('allFolders', 'true');
+    return request(`/client/files${query.size ? `?${query}` : ''}`);
+  },
+  getClientFolders: (parentId) => {
+    const query = parentId ? `?parentId=${encodeURIComponent(parentId)}` : '';
+    return request(`/client/folders${query}`);
+  },
+  createClientFolder: (name, parentId) =>
+    request('/client/folders', { method: 'POST', body: JSON.stringify({ name, parentId }) }),
   uploadClientFile: (formData) => request('/client/files/upload', { method: 'POST', body: formData }),
+  createClientTextFile: (name, content, folderId) =>
+    request('/client/text-files', { method: 'POST', body: JSON.stringify({ name, content, folderId }) }),
+  getClientTextFile: (fileId) => request(`/client/text-files/${fileId}`),
+  saveClientTextFile: (fileId, content) =>
+    request(`/client/text-files/${fileId}`, { method: 'PUT', body: JSON.stringify({ content }) }),
   downloadClientFile: (fileId) => download(`/client/files/${fileId}/download`),
   recycleClientFile: (fileId) => request(`/client/files/${fileId}/recycle`, { method: 'POST' }),
   getClientRecycleBin: () => request('/client/recycle-bin'),

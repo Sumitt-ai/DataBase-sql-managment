@@ -83,8 +83,12 @@ export const ClientPortal = () => {
     });
   }, [setClientProfile, addToast, logout]);
 
-  const route = path.startsWith('/client/editor/') ? 'editor' : (path.replace(/\/$/, '') || '/client/dashboard');
-  const fileId = route === 'editor' ? path.split('/').pop() : null;
+  const route = path.startsWith('/client/editor/')
+    ? 'editor'
+    : path.startsWith('/client/text-editor/')
+      ? 'text-editor'
+      : (path.replace(/\/$/, '') || '/client/dashboard');
+  const fileId = route === 'editor' || route === 'text-editor' ? path.split('/').pop() : null;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
@@ -96,7 +100,7 @@ export const ClientPortal = () => {
         <aside className="hidden md:flex w-60 shrink-0 border-r border-slate-800 bg-slate-900/50 flex-col p-3">
           <p className="px-3 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Workspace</p>
           <nav className="space-y-1">{CLIENT_NAV.map(([href, label, Icon]) => {
-            const active = href === '/client/files' && route === 'editor' || route === href;
+            const active = href === '/client/files' && (route === 'editor' || route === 'text-editor') || route === href;
             return <button key={href} onClick={() => navigate(href)} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-medium transition ${active ? 'bg-cyan-500/10 border border-cyan-500/30 text-cyan-300' : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/70'}`}><Icon className="w-4 h-4"/>{label}</button>;
           })}</nav>
           <div className="mt-auto p-3 text-[10px] leading-relaxed text-slate-500 border-t border-slate-800">Your files are private to your account. Only the administrator can manage accounts and permissions.</div>

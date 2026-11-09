@@ -83,6 +83,37 @@ CREATE TABLE IF NOT EXISTS mysql_admin_portal.client_files (
     ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS mysql_admin_portal.client_folders (
+  folder_id CHAR(36) NOT NULL,
+  client_id BIGINT UNSIGNED NOT NULL,
+  parent_folder_id CHAR(36) NULL DEFAULT NULL,
+  folder_name VARCHAR(120) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (folder_id),
+  UNIQUE KEY uq_client_folders_parent_name (client_id, parent_folder_id, folder_name),
+  KEY ix_client_folders_parent (client_id, parent_folder_id),
+  CONSTRAINT fk_client_folders_client
+    FOREIGN KEY (client_id) REFERENCES mysql_admin_portal.clients (client_id)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT fk_client_folders_parent
+    FOREIGN KEY (parent_folder_id) REFERENCES mysql_admin_portal.client_folders (folder_id)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS mysql_admin_portal.client_file_locations (
+  file_id CHAR(36) NOT NULL,
+  client_id BIGINT UNSIGNED NOT NULL,
+  folder_id CHAR(36) NULL DEFAULT NULL,
+  PRIMARY KEY (file_id),
+  KEY ix_client_file_locations_folder (client_id, folder_id),
+  CONSTRAINT fk_client_file_locations_file
+    FOREIGN KEY (file_id) REFERENCES mysql_admin_portal.client_files (file_id)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT fk_client_file_locations_folder
+    FOREIGN KEY (folder_id) REFERENCES mysql_admin_portal.client_folders (folder_id)
+    ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS mysql_admin_portal.client_file_versions (
   file_id CHAR(36) NOT NULL,
   version_number INT UNSIGNED NOT NULL,

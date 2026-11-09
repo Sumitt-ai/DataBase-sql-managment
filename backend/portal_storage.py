@@ -14,7 +14,7 @@ from typing import Any
 from backend.config import settings
 
 
-SUPPORTED_EXTENSIONS = {".xlsx", ".xls", ".csv"}
+SUPPORTED_EXTENSIONS = {".xlsx", ".xls", ".csv", ".txt"}
 MAX_WORKBOOK_SHEETS = 20
 MAX_WORKBOOK_CELLS = 200_000
 MAX_WORKBOOK_COLUMNS = 256
@@ -62,8 +62,19 @@ def safe_original_name(filename: str | None) -> tuple[str, str]:
         raise ValueError("File name must be 255 characters or fewer.")
     extension = Path(name).suffix.lower()
     if extension not in SUPPORTED_EXTENSIONS:
-        raise ValueError("Only .xlsx, .xls, and .csv files are supported.")
+        raise ValueError("Only .xlsx, .xls, .csv, and .txt files are supported.")
     return name, extension
+
+
+def safe_folder_name(name: str) -> str:
+    clean_name = name.strip()
+    if not clean_name or clean_name in {".", ".."}:
+        raise ValueError("Folder name cannot be empty or a relative path.")
+    if len(clean_name) > 120:
+        raise ValueError("Folder names must be 120 characters or fewer.")
+    if any(ord(char) < 32 for char in clean_name) or any(char in '/\\' for char in clean_name):
+        raise ValueError("Folder names cannot contain path separators or control characters.")
+    return clean_name
 
 
 def sha256_bytes(data: bytes) -> str:

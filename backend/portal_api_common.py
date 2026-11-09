@@ -102,6 +102,7 @@ def get_file(cursor, client_id: int, file_id: str, state: str | None = None) -> 
 def file_json(row: dict) -> dict:
     return {
         "fileId": row["file_id"],
+        "folderId": row.get("folder_id"),
         "originalName": row["original_name"],
         "extension": row["file_extension"],
         "contentType": row["content_type"],

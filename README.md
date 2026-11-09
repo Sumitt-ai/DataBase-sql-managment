@@ -8,16 +8,16 @@ An existing React/Vite administration console backed by FastAPI, MySQL 8, and a 
 
 - MySQL-backed administrator login.
 - Dashboard, MySQL user management, database management, request approvals, activity log, and settings.
-- Separate Client Management for enabling existing MySQL accounts in the Client Portal, setting file permissions, activating/deactivating or removing portal access, deleting the associated MySQL user, reviewing uploaded files, viewing storage usage, and reviewing client activity. Removing portal access preserves the user's uploaded files and activity history.
+- Separate Client Management for enabling existing MySQL accounts in the Client Portal with a searchable picker for active, unenrolled MySQL users, setting file permissions, activating/deactivating or removing portal access, deleting the associated MySQL user, reviewing uploaded files, viewing storage usage, and reviewing client activity. Removing portal access preserves the user's uploaded files and activity history.
 - The MySQL User Management page creates and manages database accounts. Client Management enrolls an existing MySQL account for portal access and does not create a second password.
 
 ### Client Portal
 
 - Separate sign-in at `/client/login`; clients cannot self-register. Sign-in uses the username and password of an active MySQL account that an administrator has enrolled for portal access.
-- Client dashboard, private file list, upload, workbook editor, downloads, recycle bin, activity history, profile, and logout.
-- Supports `.xlsx`, `.xls`, and `.csv` files. Files are stored on the server, not in MySQL. MySQL stores account, permission, file metadata, version, session, and activity records.
+- Client dashboard, private file list, nested folders, folder-scoped uploads, workbook and plain-text editors, downloads, recycle bin, activity history, profile, and logout.
+- Supports `.xlsx`, `.xls`, `.csv`, and `.txt` files. Clients can create nested folders and `.txt` files in the browser. Files are stored on the server, not in MySQL. MySQL stores account, permission, folder, file metadata, version, session, and activity records.
 - Backend-generated client folders and file keys enforce ownership. The browser never supplies a server path.
-- Each save backs up the previous workbook version. Recycle and restore move the file within that client's storage area.
+- Each workbook or text-file save backs up the previous version. Recycle and restore move the file within that client's storage area.
 
 Workbook editing rebuilds the file from cell values and formulas. Advanced formatting, charts, macros, pivot tables, and external connections are not preserved. Legacy `.xls` editing preserves cell values and sheet names; formulas and formatting are converted to their displayed values. CSV has one sheet and no workbook formatting.
 
@@ -65,7 +65,7 @@ Make sure the Windows account running FastAPI can write to this configured direc
 
 ## Client Portal metadata schema
 
-`backend/client_portal_schema.sql` contains an additive migration for the separate `mysql_admin_portal` schema and its seven tables: `clients`, `client_access_removals`, `client_permissions`, `auth_sessions`, `client_files`, `client_file_versions`, and `client_activity`. Removed enrollments are hidden from Client Management and have their sessions revoked; their portal files and history remain stored. Re-enabling the same account restores its enrollment and retained data. The script also makes the legacy `clients.password_hash` column nullable; that field is no longer used for sign-in. The schema was created on this project instance earlier, but rerun this SQL file after the MySQL server is reachable to apply the compatibility change. The backend does not automatically apply DDL at startup.
+`backend/client_portal_schema.sql` contains an additive migration for the separate `mysql_admin_portal` schema and its nine tables: `clients`, `client_access_removals`, `client_permissions`, `auth_sessions`, `client_files`, `client_folders`, `client_file_locations`, `client_file_versions`, and `client_activity`. Apply this script after upgrading so folder and file-location tables exist; the backend does not automatically apply DDL at startup. Removed enrollments are hidden from Client Management and have their sessions revoked; their portal files and history remain stored. Re-enabling the same account restores its enrollment and retained data. The script also makes the legacy `clients.password_hash` column nullable; that field is no longer used for sign-in.
 
 On another server, inspect the schema and check for conflicts before applying the migration. It uses `CREATE DATABASE IF NOT EXISTS`, `CREATE TABLE IF NOT EXISTS`, and a non-destructive `MODIFY COLUMN` for the legacy password-hash field; it does not drop existing objects. Do not run privilege-grant scripts without reviewing their contents and understanding the required grants.
 

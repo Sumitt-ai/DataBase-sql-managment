@@ -5,15 +5,21 @@ import shutil
 import uuid
 
 import pymysql
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 
 from backend.config import settings
-from backend.models import WorkbookSaveRequest
+from backend.models import (
+    ClientFolderCreateRequest,
+    ClientTextFileCreateRequest,
+    ClientTextFileUpdateRequest,
+    WorkbookSaveRequest,
+)
 from backend.portal_api_common import file_json, file_response, get_file, log_portal_activity, require_permission
 from backend.portal_security import get_portal_connection, require_client
 from backend.portal_storage import (
     ensure_client_directories,
     read_workbook,
+    safe_folder_name,
     safe_original_name,
     sha256_bytes,
     storage_path,
@@ -25,27 +31,137 @@ from backend.portal_storage import (
 router = APIRouter(prefix="/api/client")
 
 
+def _validate_folder(cursor, client_id: int, folder_id: str | None) -> None:
+    if folder_id is None:
+        return
+    cursor.execute(
+        "SELECT folder_id FROM client_folders WHERE folder_id = %s AND client_id = %s",
+        (folder_id, client_id),
+    )
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Folder not found.")
+
+
 @router.get("/files")
-def list_client_files(principal: dict = Depends(require_client)):
+def list_client_files(
+    folder_id: str | None = Query(default=None, alias="folderId"),
+    all_folders: bool = Query(default=False, alias="allFolders"),
+    principal: dict = Depends(require_client),
+):
     conn = get_portal_connection()
     try:
         with conn.cursor() as cursor:
+            if not all_folders:
+                _validate_folder(cursor, principal["client_id"], folder_id)
+                if folder_id is None:
+                    folder_clause = "AND (loc.folder_id IS NULL)"
+                    params = (principal["client_id"],)
+                else:
+                    folder_clause = "AND loc.folder_id = %s"
+                    params = (principal["client_id"], folder_id)
+            else:
+                folder_clause = ""
+                params = (principal["client_id"],)
             cursor.execute(
-                "SELECT * FROM client_files WHERE client_id = %s AND file_state = 'active' "
-                "ORDER BY updated_at DESC, original_name",
-                (principal["client_id"],),
+                "SELECT f.*, loc.folder_id FROM client_files f "
+                "LEFT JOIN client_file_locations loc ON loc.file_id = f.file_id AND loc.client_id = f.client_id "
+                "WHERE f.client_id = %s AND f.file_state = 'active' "
+                f"{folder_clause} ORDER BY f.updated_at DESC, f.original_name",
+                params,
             )
             return [file_json(row) for row in cursor.fetchall()]
     finally:
         conn.close()
 
 
-@router.post("/files/upload", status_code=201)
-async def upload_client_file(request: Request, file: UploadFile = File(...), principal: dict = Depends(require_client)):
+@router.get("/folders")
+def list_client_folders(parent_id: str | None = Query(default=None, alias="parentId"), principal: dict = Depends(require_client)):
+    conn = get_portal_connection()
+    try:
+        with conn.cursor() as cursor:
+            _validate_folder(cursor, principal["client_id"], parent_id)
+            if parent_id is None:
+                cursor.execute(
+                    "SELECT folder_id, folder_name, parent_folder_id, created_at FROM client_folders "
+                    "WHERE client_id = %s AND parent_folder_id IS NULL ORDER BY folder_name",
+                    (principal["client_id"],),
+                )
+            else:
+                cursor.execute(
+                    "SELECT folder_id, folder_name, parent_folder_id, created_at FROM client_folders "
+                    "WHERE client_id = %s AND parent_folder_id = %s ORDER BY folder_name",
+                    (principal["client_id"], parent_id),
+                )
+            return [
+                {"folderId": row["folder_id"], "name": row["folder_name"], "parentId": row["parent_folder_id"], "createdAt": row["created_at"]}
+                for row in cursor.fetchall()
+            ]
+    finally:
+        conn.close()
+
+
+@router.post("/folders", status_code=201)
+def create_client_folder(body: ClientFolderCreateRequest, request: Request, principal: dict = Depends(require_client)):
+    try:
+        folder_name = safe_folder_name(body.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     conn = get_portal_connection()
     try:
         with conn.cursor() as cursor:
             require_permission(cursor, principal["client_id"], "upload")
+            _validate_folder(cursor, principal["client_id"], body.parentId)
+            cursor.execute(
+                "SELECT client_id FROM clients WHERE client_id = %s FOR UPDATE",
+                (principal["client_id"],),
+            )
+            if not cursor.fetchone():
+                raise HTTPException(status_code=404, detail="Client account not found.")
+            cursor.execute(
+                "SELECT folder_id FROM client_folders WHERE client_id = %s "
+                "AND parent_folder_id <=> %s AND folder_name = %s FOR UPDATE",
+                (principal["client_id"], body.parentId, folder_name),
+            )
+            if cursor.fetchone():
+                raise HTTPException(status_code=409, detail="A folder with this name already exists here.")
+            folder_id = str(uuid.uuid4())
+            cursor.execute(
+                "INSERT INTO client_folders (folder_id, client_id, parent_folder_id, folder_name) VALUES (%s, %s, %s, %s)",
+                (folder_id, principal["client_id"], body.parentId, folder_name),
+            )
+            log_portal_activity(
+                cursor, "client", principal["username"], principal["client_id"], "folder_created",
+                details={"name": folder_name, "parentId": body.parentId},
+                ip=request.client.host if request.client else None,
+            )
+        conn.commit()
+        return {"success": True, "folder": {"folderId": folder_id, "name": folder_name, "parentId": body.parentId}}
+    except HTTPException:
+        conn.rollback()
+        raise
+    except pymysql.IntegrityError as exc:
+        conn.rollback()
+        raise HTTPException(status_code=409, detail="A folder with this name already exists here.") from exc
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@router.post("/files/upload", status_code=201)
+async def upload_client_file(
+    request: Request,
+    file: UploadFile = File(...),
+    folder_id: str | None = Form(default=None),
+    principal: dict = Depends(require_client),
+):
+    conn = get_portal_connection()
+    try:
+        with conn.cursor() as cursor:
+            require_permission(cursor, principal["client_id"], "upload")
+            _validate_folder(cursor, principal["client_id"], folder_id)
     finally:
         conn.close()
 
@@ -63,12 +179,14 @@ async def upload_client_file(request: Request, file: UploadFile = File(...), pri
         raise HTTPException(status_code=413, detail=f"File exceeds the {settings.CLIENT_MAX_UPLOAD_MB} MB upload limit.")
 
     file_id = str(uuid.uuid4())
-    storage_key = f"Files/{file_id}{extension}"
+    storage_key = f"Files/{folder_id}/{file_id}{extension}" if folder_id else f"Files/{file_id}{extension}"
     temp_path = final_path = None
     try:
         ensure_client_directories(principal["client_id"])
-        temp_path = storage_path(principal["client_id"], f"Files/.{file_id}.upload{extension}")
+        temp_key = f"Files/{folder_id}/.{file_id}.upload{extension}" if folder_id else f"Files/.{file_id}.upload{extension}"
+        temp_path = storage_path(principal["client_id"], temp_key)
         final_path = storage_path(principal["client_id"], storage_key)
+        temp_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path.write_bytes(content)
     except OSError as exc:
         if temp_path:
@@ -76,7 +194,8 @@ async def upload_client_file(request: Request, file: UploadFile = File(...), pri
         raise HTTPException(status_code=507, detail="The server could not write to the configured client file store.") from exc
 
     try:
-        validate_sheets(extension, read_workbook(temp_path, extension))
+        if extension != ".txt":
+            validate_sheets(extension, read_workbook(temp_path, extension))
         os.replace(temp_path, final_path)
     except Exception as exc:
         if temp_path:
@@ -103,6 +222,11 @@ async def upload_client_file(request: Request, file: UploadFile = File(...), pri
                 "VALUES (%s, 1, %s, %s, %s, %s)",
                 (file_id, storage_key, len(content), digest, principal["username"]),
             )
+            if folder_id:
+                cursor.execute(
+                    "INSERT INTO client_file_locations (file_id, client_id, folder_id) VALUES (%s, %s, %s)",
+                    (file_id, principal["client_id"], folder_id),
+                )
             log_portal_activity(
                 cursor, "client", principal["username"], principal["client_id"], "file_uploaded",
                 file_id, {"name": original_name}, request.client.host if request.client else None,
@@ -118,7 +242,165 @@ async def upload_client_file(request: Request, file: UploadFile = File(...), pri
         raise HTTPException(status_code=500, detail="File metadata could not be saved.") from exc
     finally:
         conn.close()
-    return {"success": True, "file": {"fileId": file_id, "originalName": original_name, "sizeBytes": len(content), "currentVersion": 1}}
+    return {"success": True, "file": {"fileId": file_id, "originalName": original_name, "sizeBytes": len(content), "currentVersion": 1, "folderId": folder_id}}
+
+
+@router.post("/text-files", status_code=201)
+def create_client_text_file(body: ClientTextFileCreateRequest, request: Request, principal: dict = Depends(require_client)):
+    try:
+        filename = body.name if body.name.lower().endswith(".txt") else f"{body.name}.txt"
+        original_name, extension = safe_original_name(filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    content = body.content.encode("utf-8")
+    max_bytes = max(1, settings.CLIENT_MAX_UPLOAD_MB) * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"Text file exceeds the {settings.CLIENT_MAX_UPLOAD_MB} MB limit.")
+    conn = get_portal_connection()
+    try:
+        with conn.cursor() as cursor:
+            require_permission(cursor, principal["client_id"], "upload")
+            _validate_folder(cursor, principal["client_id"], body.folderId)
+    finally:
+        conn.close()
+    file_id = str(uuid.uuid4())
+    storage_key = f"Files/{body.folderId}/{file_id}.txt" if body.folderId else f"Files/{file_id}.txt"
+    path = storage_path(principal["client_id"], storage_key)
+    try:
+        ensure_client_directories(principal["client_id"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    except OSError as exc:
+        raise HTTPException(status_code=507, detail="The server could not write to the configured client file store.") from exc
+
+    digest = sha256_bytes(content)
+    conn = get_portal_connection()
+    try:
+        with conn.cursor() as cursor:
+            require_permission(cursor, principal["client_id"], "upload")
+            _validate_folder(cursor, principal["client_id"], body.folderId)
+            cursor.execute(
+                "INSERT INTO client_files (file_id, client_id, original_name, file_extension, content_type, storage_key, size_bytes, sha256, current_version) "
+                "VALUES (%s, %s, %s, %s, 'text/plain; charset=utf-8', %s, %s, %s, 1)",
+                (file_id, principal["client_id"], original_name, extension, storage_key, len(content), digest),
+            )
+            cursor.execute(
+                "INSERT INTO client_file_versions (file_id, version_number, storage_key, size_bytes, sha256, created_by_username) "
+                "VALUES (%s, 1, %s, %s, %s, %s)",
+                (file_id, storage_key, len(content), digest, principal["username"]),
+            )
+            if body.folderId:
+                cursor.execute(
+                    "INSERT INTO client_file_locations (file_id, client_id, folder_id) VALUES (%s, %s, %s)",
+                    (file_id, principal["client_id"], body.folderId),
+                )
+            log_portal_activity(
+                cursor, "client", principal["username"], principal["client_id"], "text_file_created",
+                file_id, {"name": original_name}, request.client.host if request.client else None,
+            )
+        conn.commit()
+    except HTTPException:
+        conn.rollback()
+        path.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        conn.rollback()
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="Text file metadata could not be saved.") from exc
+    finally:
+        conn.close()
+    return {"success": True, "file": {"fileId": file_id, "originalName": original_name, "sizeBytes": len(content), "currentVersion": 1, "folderId": body.folderId}}
+
+
+@router.get("/text-files/{file_id}")
+def get_client_text_file(file_id: str, principal: dict = Depends(require_client)):
+    conn = get_portal_connection()
+    try:
+        with conn.cursor() as cursor:
+            require_permission(cursor, principal["client_id"], "edit")
+            row = get_file(cursor, principal["client_id"], file_id, "active")
+    finally:
+        conn.close()
+    if row["file_extension"] != ".txt":
+        raise HTTPException(status_code=422, detail="This file is not a text file.")
+    path = storage_path(principal["client_id"], row["storage_key"])
+    try:
+        content = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="The stored text file is missing from the server.") from exc
+    except (OSError, UnicodeError) as exc:
+        raise HTTPException(status_code=422, detail="The stored text file could not be read.") from exc
+    return {"fileId": row["file_id"], "fileName": row["original_name"], "content": content, "currentVersion": row["current_version"]}
+
+
+@router.put("/text-files/{file_id}")
+def save_client_text_file(file_id: str, body: ClientTextFileUpdateRequest, request: Request, principal: dict = Depends(require_client)):
+    content = body.content.encode("utf-8")
+    max_bytes = max(1, settings.CLIENT_MAX_UPLOAD_MB) * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"Text file exceeds the {settings.CLIENT_MAX_UPLOAD_MB} MB limit.")
+    conn = get_portal_connection()
+    current_path = backup_path = temp_path = None
+    try:
+        with conn.cursor() as cursor:
+            require_permission(cursor, principal["client_id"], "edit")
+            cursor.execute(
+                "SELECT * FROM client_files WHERE file_id = %s AND client_id = %s AND file_state = 'active' FOR UPDATE",
+                (file_id, principal["client_id"]),
+            )
+            row = cursor.fetchone()
+            if not row or row["file_extension"] != ".txt":
+                raise HTTPException(status_code=404, detail="Text file not found.")
+            current_path = storage_path(principal["client_id"], row["storage_key"])
+            if not current_path.is_file():
+                raise HTTPException(status_code=404, detail="The stored text file is missing from the server.")
+            ensure_client_directories(principal["client_id"])
+            suffix = uuid.uuid4().hex
+            temp_path = storage_path(principal["client_id"], f"Files/.{file_id}_{suffix}.tmp")
+            backup_key = f"Backups/{file_id}_v{row['current_version']}_{suffix}.txt"
+            backup_path = storage_path(principal["client_id"], backup_key)
+            temp_path.write_bytes(content)
+            os.replace(current_path, backup_path)
+            os.replace(temp_path, current_path)
+            next_version = row["current_version"] + 1
+            digest = sha256_bytes(content)
+            cursor.execute(
+                "INSERT INTO client_file_versions (file_id, version_number, storage_key, size_bytes, sha256, created_by_username) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (file_id, next_version, row["storage_key"], len(content), digest, principal["username"]),
+            )
+            cursor.execute(
+                "UPDATE client_files SET size_bytes = %s, sha256 = %s, current_version = %s "
+                "WHERE file_id = %s AND client_id = %s",
+                (len(content), digest, next_version, file_id, principal["client_id"]),
+            )
+            cursor.execute(
+                "UPDATE client_file_versions SET storage_key = %s WHERE file_id = %s AND version_number = %s",
+                (backup_key, file_id, row["current_version"]),
+            )
+            log_portal_activity(
+                cursor, "client", principal["username"], principal["client_id"], "text_file_updated",
+                file_id, {"name": row["original_name"], "version": next_version},
+                request.client.host if request.client else None,
+            )
+        conn.commit()
+        return {"success": True, "currentVersion": next_version}
+    except HTTPException:
+        conn.rollback()
+        if current_path and backup_path and backup_path.exists():
+            os.replace(backup_path, current_path)
+        if temp_path and temp_path.exists():
+            temp_path.unlink()
+        raise
+    except Exception as exc:
+        conn.rollback()
+        if current_path and backup_path and backup_path.exists():
+            os.replace(backup_path, current_path)
+        if temp_path and temp_path.exists():
+            temp_path.unlink()
+        raise HTTPException(status_code=500, detail="Text file could not be saved.") from exc
+    finally:
+        conn.close()
 
 
 @router.get("/files/{file_id}/download")
@@ -204,8 +486,16 @@ def restore_client_file(file_id: str, request: Request, principal: dict = Depend
             require_permission(cursor, principal["client_id"], "restore")
             row = get_file(cursor, principal["client_id"], file_id, "recycled")
             moved_from = storage_path(principal["client_id"], row["storage_key"])
-            new_key = f"Files/{row['file_id']}{row['file_extension']}"
+            cursor.execute(
+                "SELECT folder_id FROM client_file_locations WHERE file_id = %s AND client_id = %s",
+                (file_id, principal["client_id"]),
+            )
+            location = cursor.fetchone()
+            folder_id = location["folder_id"] if location else None
+            _validate_folder(cursor, principal["client_id"], folder_id)
+            new_key = f"Files/{folder_id}/{row['file_id']}{row['file_extension']}" if folder_id else f"Files/{row['file_id']}{row['file_extension']}"
             moved_to = storage_path(principal["client_id"], new_key)
+            moved_to.parent.mkdir(parents=True, exist_ok=True)
             if not moved_from.is_file():
                 raise HTTPException(status_code=404, detail="The stored file is missing from the server.")
             if moved_to.exists():

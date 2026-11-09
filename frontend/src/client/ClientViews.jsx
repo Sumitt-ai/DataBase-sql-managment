@@ -1,11 +1,12 @@
 /* eslint-disable react/prop-types */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Activity, ArrowLeft, ArrowRight, Download, FileSpreadsheet, Filter,
+  Activity, ArrowLeft, ArrowRight, Download, FileSpreadsheet, FileText, Filter, Folder, FolderPlus,
   LoaderCircle, Plus, RotateCcw, Save, Search, Trash2, Upload, UserRound, X,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { api } from '../services/api';
+import { Modal } from '../components/common/Modal';
 
 const buttonClass = 'inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-700 text-xs font-semibold text-slate-300 hover:border-cyan-500/40 hover:text-cyan-300 disabled:opacity-40 disabled:cursor-not-allowed';
 const primaryClass = 'inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-xs font-bold text-slate-950 disabled:opacity-50';
@@ -22,6 +23,7 @@ export const ClientRoute = ({ path, fileId, navigate, profile }) => {
   if (path === '/client/activity') return <ActivityPage/>;
   if (path === '/client/profile') return <ProfilePage profile={profile}/>;
   if (path === 'editor') return <WorkbookEditor fileId={fileId} navigate={navigate}/>;
+  if (path === 'text-editor') return <TextFileEditor fileId={fileId} navigate={navigate}/>;
   return <ClientDashboard navigate={navigate} profile={profile}/>;
 };
 
@@ -55,30 +57,143 @@ const triggerDownload = async (fileId, apiMethod, addToast) => {
   }
 };
 
+const TextFileEditor = ({ fileId, navigate }) => {
+  const { addToast, clientProfile } = useApp();
+  const [file, setFile] = useState(null);
+  const [content, setContent] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const canEdit = clientProfile?.permissions?.includes('edit');
+  const loadFile = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await api.getClientTextFile(fileId);
+      setFile(result);
+      setContent(result.content);
+    } catch (err) {
+      addToast(`Could not open text file: ${err.message}`, 'error');
+      setFile(null);
+    } finally { setLoading(false); }
+  }, [addToast, fileId]);
+  useEffect(() => { loadFile(); }, [loadFile]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const result = await api.saveClientTextFile(fileId, content);
+      setFile((prev) => ({ ...prev, currentVersion: result.currentVersion }));
+      addToast(`Saved ${file.fileName} as version ${result.currentVersion}.`, 'success');
+    } catch (err) { addToast(`Could not save text file: ${err.message}`, 'error'); }
+    finally { setSaving(false); }
+  };
+
+  if (loading) return <div className="p-12 text-center text-xs text-slate-500">Loading text file…</div>;
+  if (!file) return <div className="p-8 rounded-2xl border border-slate-800 bg-slate-900 text-center"><p className="text-sm text-slate-300">Text file could not be opened.</p><button onClick={() => navigate('/client/files')} className={`${buttonClass} mt-4`}><ArrowLeft className="w-3.5 h-3.5"/>Back to My Files</button></div>;
+
+  return <>
+    <PageTitle eyebrow="Text file editor" title={file.fileName} description={`Version ${file.currentVersion} · Plain text`} action={<div className="flex gap-2"><button onClick={() => navigate('/client/files')} className={buttonClass}><ArrowLeft className="w-3.5 h-3.5"/>My Files</button><button onClick={save} disabled={!canEdit || saving} className={primaryClass}>{saving ? <LoaderCircle className="w-4 h-4 animate-spin"/> : <Save className="w-4 h-4"/>}{saving ? 'Saving…' : 'Save changes'}</button></div>}/>
+    <textarea aria-label={`Contents of ${file.fileName}`} value={content} onChange={(event) => setContent(event.target.value)} readOnly={!canEdit} spellCheck={false} className="w-full min-h-[65vh] p-4 rounded-xl border border-slate-800 bg-slate-900/70 text-sm font-mono text-slate-200 leading-relaxed outline-none focus:border-cyan-500 read-only:opacity-70"/>
+    {!canEdit && <p className="mt-2 text-xs text-amber-300">Your account does not have permission to edit files.</p>}
+  </>;
+};
+
 const ClientFiles = ({ navigate, downloadsOnly = false }) => {
   const { addToast, clientProfile } = useApp();
   const [files, setFiles] = useState([]);
+  const [folders, setFolders] = useState([]);
+  const [breadcrumbs, setBreadcrumbs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [folderName, setFolderName] = useState('');
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [textOpen, setTextOpen] = useState(false);
+  const [textFileName, setTextFileName] = useState('');
+  const [textContent, setTextContent] = useState('');
+  const [busy, setBusy] = useState(false);
+  const uploadInput = useRef(null);
+  const currentFolder = breadcrumbs.at(-1) || null;
   const canEdit = clientProfile?.permissions?.includes('edit');
+  const canUpload = clientProfile?.permissions?.includes('upload');
   const canDownload = clientProfile?.permissions?.includes('download');
   const canRecycle = clientProfile?.permissions?.includes('recycle');
   const loadFiles = useCallback(async () => {
     setLoading(true);
-    try { setFiles(await api.getClientFiles()); }
+    try {
+      if (downloadsOnly) {
+        setFiles(await api.getClientFiles(undefined, true));
+      } else {
+        const [fileRows, folderRows] = await Promise.all([
+          api.getClientFiles(currentFolder?.folderId),
+          api.getClientFolders(currentFolder?.folderId),
+        ]);
+        setFiles(fileRows);
+        setFolders(folderRows);
+      }
+    }
     catch (err) { addToast(`Could not load files: ${err.message}`, 'error'); }
     finally { setLoading(false); }
-  }, [addToast]);
+  }, [addToast, currentFolder?.folderId, downloadsOnly]);
   useEffect(() => { loadFiles(); }, [loadFiles]);
   const visible = files.filter((file) => file.originalName.toLowerCase().includes(search.toLowerCase()));
+  const openFolder = (folder) => setBreadcrumbs((prev) => [...prev, folder]);
+  const openBreadcrumb = (index) => setBreadcrumbs((prev) => prev.slice(0, index + 1));
+  const createFolder = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await api.createClientFolder(folderName, currentFolder?.folderId);
+      addToast(`Folder "${folderName.trim()}" created.`, 'success');
+      setFolderName('');
+      setCreatingFolder(false);
+      await loadFiles();
+    } catch (err) { addToast(`Could not create folder: ${err.message}`, 'error'); }
+    finally { setBusy(false); }
+  };
+  const uploadFiles = async (event) => {
+    const selectedFiles = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (!selectedFiles.length) return;
+    setBusy(true);
+    let uploaded = 0;
+    try {
+      for (const file of selectedFiles) {
+        const body = new FormData();
+        body.append('file', file);
+        if (currentFolder) body.append('folder_id', currentFolder.folderId);
+        await api.uploadClientFile(body);
+        uploaded += 1;
+      }
+      addToast(`${uploaded} file${uploaded === 1 ? '' : 's'} uploaded.`, 'success');
+      await loadFiles();
+    } catch (err) {
+      addToast(`${uploaded} file${uploaded === 1 ? '' : 's'} uploaded; remaining upload failed: ${err.message}`, 'error');
+      await loadFiles();
+    } finally { setBusy(false); }
+  };
+  const createTextFile = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const result = await api.createClientTextFile(textFileName, textContent, currentFolder?.folderId);
+      addToast(`${result.file.originalName} created.`, 'success');
+      setTextOpen(false);
+      setTextFileName('');
+      setTextContent('');
+      navigate(`/client/text-editor/${result.file.fileId}`);
+    } catch (err) { addToast(`Could not create text file: ${err.message}`, 'error'); }
+    finally { setBusy(false); }
+  };
   const moveToRecycle = async (file) => {
     try { await api.recycleClientFile(file.fileId); addToast(`${file.originalName} moved to the recycle bin.`, 'success'); await loadFiles(); }
     catch (err) { addToast(`Could not recycle file: ${err.message}`, 'error'); }
   };
   return <>
-    <PageTitle eyebrow="Private files" title={downloadsOnly ? 'Download Files' : 'My Files'} description={downloadsOnly ? 'Download the latest saved version of your workbooks.' : 'Only files belonging to your account are listed here.'} action={!downloadsOnly && <button onClick={() => navigate('/client/upload')} className={primaryClass}><Upload className="w-4 h-4"/>Upload Excel file</button>}/>
+    <PageTitle eyebrow="Private files" title={downloadsOnly ? 'Download Files' : 'My Files'} description={downloadsOnly ? 'Download the latest saved version of your files.' : 'Create folders, upload files, or write plain-text documents in your private workspace.'} action={!downloadsOnly && <div className="flex flex-wrap gap-2"><input ref={uploadInput} className="hidden" type="file" multiple accept=".xlsx,.xls,.csv,.txt" onChange={uploadFiles}/><button disabled={!canUpload || busy} onClick={() => uploadInput.current?.click()} className={primaryClass}><Upload className="w-4 h-4"/>Upload files</button><button disabled={!canUpload || busy} onClick={() => setCreatingFolder((value) => !value)} className={buttonClass}><FolderPlus className="w-4 h-4"/>New folder</button><button disabled={!canUpload || busy} onClick={() => setTextOpen(true)} className={buttonClass}><FileText className="w-4 h-4"/>New text file</button></div>}/>
+    {!downloadsOnly && <nav aria-label="Folder path" className="flex flex-wrap items-center gap-1 mb-4 text-xs"><button onClick={() => setBreadcrumbs([])} className="text-cyan-300 hover:text-cyan-200">My Files</button>{breadcrumbs.map((folder, index) => <span key={folder.folderId} className="inline-flex items-center gap-1"><ArrowRight className="w-3 h-3 text-slate-600"/><button onClick={() => openBreadcrumb(index)} className={index === breadcrumbs.length - 1 ? 'text-slate-200' : 'text-cyan-300 hover:text-cyan-200'}>{folder.name}</button></span>)}</nav>}
+    {creatingFolder && !downloadsOnly && <form onSubmit={createFolder} className="flex flex-wrap gap-2 mb-4 p-3 rounded-xl border border-slate-800 bg-slate-900/60"><input autoFocus required maxLength={120} value={folderName} onChange={(event) => setFolderName(event.target.value)} placeholder="New folder name" className="flex-1 min-w-48 px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-xs outline-none focus:border-cyan-500"/><button disabled={busy} className={primaryClass}>{busy ? 'Creating…' : 'Create folder'}</button><button type="button" onClick={() => setCreatingFolder(false)} className={buttonClass}>Cancel</button></form>}
     <div className="flex gap-2 mb-4"><div className="relative flex-1 max-w-sm"><Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"/><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search file names" className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-xs outline-none focus:border-cyan-500"/></div><button onClick={loadFiles} className={buttonClass}>Refresh</button></div>
-    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 overflow-hidden"><div className="overflow-x-auto"><table className="w-full min-w-[720px] text-left text-xs"><thead className="bg-slate-900 text-slate-500 uppercase text-[10px]"><tr><th className="px-4 py-3">File</th><th>Version</th><th>Size</th><th>Updated</th><th className="text-right px-4">Actions</th></tr></thead><tbody className="divide-y divide-slate-800">{loading ? <tr><td colSpan={5} className="py-12 text-center text-slate-500">Loading files…</td></tr> : visible.map((file) => <tr key={file.fileId} className="hover:bg-slate-800/30"><td className="px-4 py-3.5"><div className="flex items-center gap-2 text-slate-200"><FileSpreadsheet className="w-4 h-4 text-emerald-400"/>{file.originalName}</div><div className="text-[10px] text-slate-600 mt-1">{file.extension.toUpperCase().slice(1)}</div></td><td className="text-slate-400">v{file.currentVersion}</td><td className="text-slate-400">{formatBytes(file.sizeBytes)}</td><td className="text-slate-500">{formatDate(file.updatedAt)}</td><td className="px-4"><div className="flex justify-end gap-2">{!downloadsOnly && <button disabled={!canEdit} onClick={() => navigate(`/client/editor/${file.fileId}`)} className={buttonClass}>Edit</button>}{canDownload && <button onClick={() => triggerDownload(file.fileId, api.downloadClientFile, addToast)} className={buttonClass}><Download className="w-3.5 h-3.5"/>Download</button>}{!downloadsOnly && canRecycle && <button onClick={() => moveToRecycle(file)} className="p-2 rounded-lg border border-slate-700 text-slate-400 hover:text-rose-300" title="Move to recycle bin"><Trash2 className="w-4 h-4"/></button>}</div></td></tr>)}{!loading && visible.length === 0 && <tr><td colSpan={5} className="py-12 text-center text-slate-500">{files.length ? 'No files match this search.' : 'No files uploaded yet.'}</td></tr>}</tbody></table></div></div>
+    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 overflow-hidden"><div className="overflow-x-auto"><table className="w-full min-w-[720px] text-left text-xs"><thead className="bg-slate-900 text-slate-500 uppercase text-[10px]"><tr><th className="px-4 py-3">Name</th><th>Version</th><th>Size</th><th>Updated</th><th className="text-right px-4">Actions</th></tr></thead><tbody className="divide-y divide-slate-800">{loading ? <tr><td colSpan={5} className="py-12 text-center text-slate-500">Loading files…</td></tr> : <>{!downloadsOnly && folders.map((folder) => <tr key={folder.folderId} className="hover:bg-slate-800/30"><td className="px-4 py-3.5"><button onClick={() => openFolder(folder)} className="flex items-center gap-2 text-cyan-200"><Folder className="w-4 h-4 text-cyan-400"/>{folder.name}</button></td><td className="text-slate-600">—</td><td className="text-slate-600">—</td><td className="text-slate-500">{formatDate(folder.createdAt)}</td><td/></tr>)}{visible.map((file) => <tr key={file.fileId} className="hover:bg-slate-800/30"><td className="px-4 py-3.5"><div className="flex items-center gap-2 text-slate-200">{file.extension === '.txt' ? <FileText className="w-4 h-4 text-cyan-300"/> : <FileSpreadsheet className="w-4 h-4 text-emerald-400"/>}{file.originalName}</div><div className="text-[10px] text-slate-600 mt-1">{file.extension.toUpperCase().slice(1)}</div></td><td className="text-slate-400">v{file.currentVersion}</td><td className="text-slate-400">{formatBytes(file.sizeBytes)}</td><td className="text-slate-500">{formatDate(file.updatedAt)}</td><td className="px-4"><div className="flex justify-end gap-2">{!downloadsOnly && file.extension === '.txt' && <button disabled={!canEdit} onClick={() => navigate(`/client/text-editor/${file.fileId}`)} className={buttonClass}>Edit text</button>}{!downloadsOnly && file.extension !== '.txt' && <button disabled={!canEdit} onClick={() => navigate(`/client/editor/${file.fileId}`)} className={buttonClass}>Edit</button>}{canDownload && <button onClick={() => triggerDownload(file.fileId, api.downloadClientFile, addToast)} className={buttonClass}><Download className="w-3.5 h-3.5"/>Download</button>}{!downloadsOnly && canRecycle && <button onClick={() => moveToRecycle(file)} className="p-2 rounded-lg border border-slate-700 text-slate-400 hover:text-rose-300" title="Move to recycle bin"><Trash2 className="w-4 h-4"/></button>}</div></td></tr>)}</>}{!loading && visible.length === 0 && (downloadsOnly || folders.length === 0) && <tr><td colSpan={5} className="py-12 text-center text-slate-500">{files.length ? 'No files match this search.' : 'This folder is empty.'}</td></tr>}</tbody></table></div></div>
+    <Modal isOpen={textOpen} onClose={() => setTextOpen(false)} title={<><FileText className="w-5 h-5 text-cyan-400"/>Create a text file</>} subtitle="Create a plain-text .txt document in the current folder." maxWidth="max-w-2xl"><form onSubmit={createTextFile} className="space-y-4"><label className="block text-xs text-slate-300">File name<input autoFocus required maxLength={251} value={textFileName} onChange={(event) => setTextFileName(event.target.value)} placeholder="notes.txt" className="mt-1 w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2.5 text-sm"/></label><label className="block text-xs text-slate-300">Text content<textarea rows={12} value={textContent} onChange={(event) => setTextContent(event.target.value)} className="mt-1 w-full resize-y rounded-xl bg-slate-950 border border-slate-700 px-3 py-2.5 text-sm font-mono"/></label><div className="flex justify-end gap-2 border-t border-slate-800 pt-3"><button type="button" onClick={() => setTextOpen(false)} className={buttonClass}>Cancel</button><button disabled={busy || !textFileName.trim()} className={primaryClass}>{busy ? 'Creating…' : 'Create and edit'}</button></div></form></Modal>
   </>;
 };
 

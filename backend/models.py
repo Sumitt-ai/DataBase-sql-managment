@@ -69,6 +69,21 @@ class ClientProfileRequest(BaseModel):
     clientName: str = Field(min_length=1, max_length=160)
 
 
+class ClientFolderCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    parentId: Optional[str] = None
+
+
+class ClientTextFileCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    content: str = ""
+    folderId: Optional[str] = None
+
+
+class ClientTextFileUpdateRequest(BaseModel):
+    content: str
+
+
 class WorkbookSheet(BaseModel):
     name: str = Field(min_length=1, max_length=31)
     rows: List[List[Any]]
